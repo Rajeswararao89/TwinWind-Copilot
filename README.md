@@ -1,16 +1,17 @@
 # TwinMind Copilot
 
-A live AI meeting copilot that listens to your mic, transcribes in real time, and continuously surfaces 3 contextually-aware suggestions. Click any suggestion to get a detailed answer in the chat panel.
+A live AI meeting copilot that listens to your mic, transcribes in real time, and continuously surfaces 3 contextually-aware suggestions. Click any suggestion to get a streaming detailed answer in the chat panel.
 
-**Live demo:** `<your-vercel-url>`
+**Live demo:** https://twin-wind-copilot.vercel.app  
+**GitHub:** https://github.com/Rajeswararao89/TwinWind-Copilot
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone <repo>
-cd twinmind-copilot
+git clone https://github.com/Rajeswararao89/TwinWind-Copilot.git
+cd TwinWind-Copilot
 npm install
 npm start
 ```
@@ -23,112 +24,135 @@ Open [http://localhost:3000](http://localhost:3000), click ⚙️ Settings, past
 
 | Layer | Choice | Reason |
 |-------|--------|--------|
-| Frontend | React 18 + TypeScript | Strict typing catches bugs early; no routing needed |
-| Transcription | Groq Whisper Large V3 | Fastest whisper inference available; far lower latency than OpenAI |
-| LLM | `meta-llama/llama-4-maverick-17b-128e-instruct` on Groq | Assignment specifies GPT-OSS 120B class; Maverick is the closest Groq-hosted equivalent in that weight class |
-| Styling | Plain CSS with design tokens | Zero runtime overhead; full control; no Tailwind purge issues |
-| Deployment | Vercel (static React build) | Zero config, instant CDN |
+| Frontend | React 18 + TypeScript | Strict typing catches bugs early; clean component-per-column architecture |
+| Build tool | Vite 5 | Faster builds than CRA; no peer dependency conflicts with React 18 |
+| Transcription | Groq Whisper Large V3 | Fastest Whisper inference available; ~1.5s per 30s chunk |
+| LLM | `openai/gpt-oss-120b` on Groq | Exact model specified in the assignment; best reasoning quality on Groq |
+| Styling | Plain CSS with design tokens | Zero runtime overhead; full control over every detail |
+| Deployment | Vercel | Zero config, instant CDN, auto-redeploys on push |
 
-No backend — all API calls go directly from the browser to Groq. The API key never leaves the browser (stored in `localStorage`).
+No backend — all API calls go directly from the browser to Groq. The API key is stored in the user's own `localStorage` and never touches a server.
 
 ---
 
-## Architecture
+## File Structure
+
+All source files live at the repo root (flat structure, no `src/` subfolder):
 
 ```
-src/
-├── types.ts              # All domain types + DEFAULT_SETTINGS (prompts live here)
-├── groqClient.ts         # Thin fetch wrapper — transcription, chat, streaming
-├── useAudioRecorder.ts   # Web Audio API hook, 30s chunk rotation
-├── suggestionService.ts  # generateSuggestions() + expandSuggestion()
-├── exportSession.ts      # JSON export utility
-├── App.tsx               # Root orchestrator — all state lives here
-├── TranscriptColumn.tsx  # Left column
-├── SuggestionsColumn.tsx # Middle column
-├── ChatColumn.tsx        # Right column
-├── SettingsModal.tsx     # Editable settings (prompts, context windows, timings)
-└── index.css             # Design tokens + layout
+TwinWind-Copilot/
+├── index.html              # Vite entry point — script tag points to index.tsx
+├── vite.config.ts          # Vite config
+├── tsconfig.json           # TypeScript config (moduleResolution: bundler)
+├── package.json
+├── vercel.json             # Output dir: dist, framework: vite
+│
+├── types.ts                # All domain types + DEFAULT_SETTINGS (prompts live here)
+├── groqClient.ts           # Thin fetch wrapper — transcription, chat, streaming
+├── useAudioRecorder.ts     # Web Audio API hook — 30s chunk rotation, zero capture gap
+├── suggestionService.ts    # generateSuggestions() with previous-batch dedup
+├── exportSession.ts        # JSON export utility
+│
+├── App.tsx                 # Root orchestrator — all state + data flow
+├── TranscriptColumn.tsx    # Left column — mic button + auto-scrolling chunks
+├── SuggestionsColumn.tsx   # Middle column — batched cards, phase-aware empty states
+├── ChatColumn.tsx          # Right column — streaming chat + auto-growing input
+├── SettingsModal.tsx       # Editable prompts, context windows, timings
+└── index.css               # Design tokens + 3-column layout
 ```
 
-### Data Flow
+---
+
+## Data Flow
 
 ```
-Mic → MediaRecorder (30s chunks)
+Mic → MediaRecorder (30s chunk rotation)
          ↓
-    Whisper Large V3 (Groq)
+    Whisper Large V3 (Groq) ~1.5s
          ↓
-   TranscriptChunks[]  ──────────────────────────────────┐
-         ↓                                                │
-  every 30s auto-trigger                                  │
-         ↓                                             (full ctx)
-  generateSuggestions()                                   │
-  [last 6k chars of transcript]                           ↓
-         ↓                                         chatCompletion()
-   SuggestionBatch                                 [last 16k chars]
+   TranscriptChunks[]  ─────────────────────────────────────┐
+         ↓                                                   │
+  every 30s auto-trigger (or manual Refresh)                 │
+         ↓                                                (full ctx)
+  generateSuggestions()                                      │
+  [last 6k chars + previous batch previews]                  ↓
+         ↓                                          streamingChatCompletion()
+   SuggestionBatch (3 cards)                        [last 16k chars of transcript]
          ↓
-  click → expandSuggestion()
-  [last 12k chars of transcript]
+  click card → streamingChatCompletion()
+  [last 12k chars + suggestion context]
          ↓
-   Chat panel (streaming)
+   Chat panel — tokens appear word-by-word (~400ms to first token)
 ```
 
 ---
 
 ## Prompt Strategy
 
-This is the core of the product. Here's the reasoning behind every decision.
+This is the core of the product. Every decision is deliberate.
 
-### 1. Suggestion Prompt — Phase Detection First
+### 1. Phase Detection Before Suggestions
 
-The single biggest failure mode in live suggestion systems is **context mismatch** — surfacing a "question to ask" when someone just *asked* a question and needs an *answer*, or giving a fact-check when it's just small talk.
+The #1 failure mode in live copilots is **context mismatch** — showing "here's a question to ask" when someone just asked a question and needs an *answer*. The fix: force the model to silently classify the conversation phase first.
 
-My solution: force the model to **silently classify the conversation phase** before generating suggestions. The five phases are:
-
+Five phases:
 - `OPENING` — introductions, context-setting
-- `DISCUSSION` — exploring ideas, debating
+- `DISCUSSION` — ideas being explored, decisions being made
 - `Q&A` — one party asking, the other answering
 - `PROBLEM_SOLVING` — working through a specific issue
 - `CLOSING` — wrap-up, next steps
 
-Each phase maps to a different optimal suggestion mix. In `Q&A` mode, `answer` type suggestions are prioritized. In `CLOSING`, `talking_point` suggestions shift toward action items and next steps.
+Each phase drives a different suggestion mix. In `Q&A`, `answer` type cards are prioritized. In `CLOSING`, `talking_point` cards shift toward action items.
 
-### 2. Five Suggestion Types (not a flat list)
+### 2. Five Typed Suggestions (not a flat list)
 
-Generic copilots produce a flat list of "follow-up questions." That's boring and low-value. I defined 5 types, each serving a different cognitive need:
+Generic copilots give 3 follow-up questions. That's one-dimensional. Each of the 5 types serves a different cognitive need:
 
-| Type | When surfaced | Example |
-|------|--------------|---------|
-| `question` | Discussion, opening | "Ask them to clarify their timeline assumptions" |
-| `talking_point` | Discussion, closing | "Mention the 40% cost reduction from case study X" |
-| `answer` | Q&A (question just asked) | "The answer to their ROI question: typical payback is 18 months" |
-| `fact_check` | Anytime a claim is made | "Their '95% accuracy' claim — industry benchmarks put this at 78%" |
-| `clarification` | Jargon or ambiguity | "They said 'MLOps pipeline' — this refers to automated model deployment" |
+| Type | When surfaced | Value |
+|------|--------------|-------|
+| `question` | Discussion, Opening | Drive the conversation forward |
+| `talking_point` | Discussion, Closing | Surface facts or angles worth raising |
+| `answer` | Q&A — after a question is asked | Help you respond immediately |
+| `fact_check` | Any claim is made | Verify or challenge with specifics |
+| `clarification` | Jargon or ambiguity | Level the playing field |
 
-The prompt explicitly forbids giving all-questions or all-talking-points. The 3 suggestions must be varied.
+The prompt explicitly requires variety — no batch can be all-questions or all-talking-points.
 
-### 3. Preview = Value, Not a Teaser
+### 3. Previous Batch Deduplication
 
-A common mistake: make the preview a vague hook that forces a click ("There's an important point about the timeline…"). This is deceptive UX and annoying.
+Every refresh passes the last batch's 3 previews into the prompt:
 
-My rule: **the preview must stand alone as useful**. If you never click the card, you still got value. The detail just goes deeper — specifics, examples, counterpoints, follow-up angles.
+> *"These were the previous suggestions — generate 3 that are meaningfully different."*
 
-### 4. Context Window Strategy
+This prevents the model from repeating the same cards every 30 seconds, which is one of the most noticeable failure modes in live copilots.
 
-- **Suggestions** use the **last 6,000 chars** of transcript (recent = most relevant for what to do next)
-- **Detail expansions** use the **last 12,000 chars** (broader context to give a thorough answer)  
-- **Chat** uses the **last 16,000 chars** (full session context for anything the user asks)
+### 4. Preview = Value, Not a Teaser
 
-All three are configurable in Settings. The defaults were chosen to stay well within Groq's context limits while keeping latency low.
+Cards must stand alone as useful even if never clicked. A preview that says *"There's an important point about the timeline…"* is a teaser — annoying and low-value. The rule enforced in the prompt: the preview itself must deliver the insight. The detail expands on it with specifics, examples, and follow-up angles.
 
-### 5. No Transcript = Graceful Degradation
+### 5. Three Context Window Sizes
 
-If the transcript is empty or very short, the model still produces 3 suggestions based on whatever context exists. No hard failures, no blank states.
+| Use | Window | Reason |
+|-----|--------|--------|
+| Suggestions | Last 6,000 chars | Recency matters most for what to say next |
+| Click-to-expand | Last 12,000 chars | Broader context for thorough answers |
+| Chat | Last 16,000 chars | Full session for anything the user asks |
 
-### 6. Temperature Tuning
+All three are configurable in Settings.
 
-- Suggestions: `0.6` — varied but grounded (too high → hallucinated claims)
-- Detail expansions: `0.5` — more precise, fact-oriented
-- Chat: `0.65` — conversational but not sloppy
+### 6. Streaming on Everything User-Facing
+
+- **Chat messages** — stream word-by-word via SSE, first token in ~400ms
+- **Suggestion click expansions** — also streamed, same perceived latency as chat
+- **Suggestion generation** — non-streaming (returns a JSON blob). Streaming partial JSON would require an incremental parser and adds fragility for minimal gain at ~2s total latency.
+
+### 7. Temperature Tuning
+
+| Task | Temp | Reason |
+|------|------|--------|
+| Suggestions | 0.6 | Varied but grounded — higher risks hallucinated claims |
+| Detail expansions | 0.5 | Precise and fact-oriented |
+| Chat | 0.65 | Conversational without being sloppy |
 
 ---
 
@@ -136,48 +160,46 @@ If the transcript is empty or very short, the model still produces 3 suggestions
 
 | Operation | Typical latency |
 |-----------|----------------|
-| Whisper transcription (30s chunk) | ~1.5–2.5s |
-| Suggestion generation (3 cards) | ~1.5–3s |
-| Detail expansion (click) | ~2–4s |
-| Chat first token (streaming) | ~0.4–0.8s |
-
-Chat uses streaming so the user sees tokens appear immediately — the perceived latency is ~400ms to first word.
+| Whisper transcription (30s audio chunk) | ~1.5–2.5s |
+| Suggestion generation (3 cards) | ~2–3s |
+| Suggestion card click — first streaming token | ~400ms |
+| Chat — first streaming token | ~400ms |
 
 ---
 
-## Settings (all configurable in-app)
+## Settings (all editable in-app)
 
-All settings are editable live in ⚙️ Settings and persisted to `localStorage`.
+All settings persist to `localStorage`. Editable live via ⚙️ in the header — no redeploy needed.
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `groqApiKey` | — | Your Groq API key |
+| `groqApiKey` | — | Your Groq API key (never sent to any server) |
 | `suggestionContextTokens` | 6,000 chars | Recent transcript window for suggestion generation |
 | `detailContextTokens` | 12,000 chars | Transcript window for click-to-expand |
 | `chatContextTokens` | 16,000 chars | Transcript window injected into chat system prompt |
 | `autoRefreshIntervalMs` | 30,000ms | How often suggestions auto-regenerate while recording |
-| `suggestionPrompt` | (see `types.ts`) | Full system prompt for suggestion generation |
-| `detailPrompt` | (see `types.ts`) | System prompt for click-to-expand answers |
-| `chatSystemPrompt` | (see `types.ts`) | System prompt for the chat panel |
+| `suggestionPrompt` | see `types.ts` | Full system prompt for suggestion generation |
+| `detailPrompt` | see `types.ts` | System prompt for click-to-expand answers |
+| `chatSystemPrompt` | see `types.ts` | System prompt for the chat panel |
 
-Prompts are editable directly in the Settings modal. The defaults in `types.ts` represent the best values found through iteration.
+The defaults in `types.ts` are the optimal values found through iteration.
 
 ---
 
 ## Export Format
 
-Clicking ↓ exports a JSON file with this shape:
+The ↓ button exports a timestamped JSON file with the complete session:
 
 ```json
 {
-  "exportedAt": "2024-01-15T14:32:00.000Z",
+  "exportedAt": "2026-04-19T16:30:00.000Z",
   "transcript": [
-    { "id": "chunk-1", "text": "...", "timestamp": 1705329120000 }
+    { "id": "chunk-1", "text": "...", "timestamp": 1745000000000 }
   ],
   "suggestionBatches": [
     {
       "id": "batch-1",
-      "timestamp": 1705329150000,
+      "timestamp": 1745000030000,
       "transcriptSnapshot": "...",
       "suggestions": [
         {
@@ -185,55 +207,68 @@ Clicking ↓ exports a JSON file with this shape:
           "type": "question",
           "preview": "...",
           "detail": "...",
-          "timestamp": 1705329150000
+          "timestamp": 1745000030000
         }
       ]
     }
   ],
   "chat": [
-    { "id": "msg-1", "role": "user", "content": "...", "timestamp": 1705329160000 },
-    { "id": "msg-2", "role": "assistant", "content": "...", "timestamp": 1705329161000 }
+    { "id": "msg-1", "role": "user", "content": "...", "timestamp": 1745000060000 },
+    { "id": "msg-2", "role": "assistant", "content": "...", "timestamp": 1745000061000 }
   ]
 }
 ```
 
 ---
 
+## Key Engineering Decisions
+
+**MediaRecorder rotation over timeslice** — Instead of using `timeslice` to get continuous micro-chunks, the recorder is stopped and immediately restarted every 30s on the same stream. This gives Whisper complete utterances, significantly improving transcription accuracy with zero gap between chunks.
+
+**No backend** — Direct browser→Groq calls. No infrastructure to maintain, no latency hop, no server-side key storage needed. The tradeoff (key visible in DevTools) is acceptable for a personal copilot tool.
+
+**`transcriptRef` + `settingsRef`** — Mutable refs that mirror state, used inside async callbacks to prevent stale closure bugs where a callback captures an outdated value of transcript or settings.
+
+**`suggestionBatchesRef`** — Keeps a ref-copy of the batches array so `handleRefreshSuggestions` can read the last batch's previews without adding batches as a dependency (which would reset the auto-refresh interval on every new batch).
+
+**Flat file structure** — All source files at the repo root instead of a `src/` subfolder. Required because the project was scaffolded directly on GitHub. Vite handles this cleanly with the `index.html` script tag pointing to `/index.tsx`.
+
+**Vite over Create React App** — CRA has unresolved peer dependency conflicts with React 18 and newer npm versions. Vite is faster, actively maintained, and the current industry standard.
+
+---
+
 ## Tradeoffs & Known Limitations
 
-**No streaming for suggestions** — suggestions are returned as a single JSON blob. Streaming partial JSON would require a more complex parser and adds fragility. Given suggestions take ~2s, this is acceptable. Chat *does* stream.
+**No speaker diarization** — Whisper transcribes all audio as one speaker. Production would use pyannote or a diarization-enabled API (AssemblyAI, Deepgram) so suggestions can reference who said what.
 
-**No speaker diarization** — Whisper transcribes all audio as one speaker. A production system would want diarization to know who said what (especially for `answer` suggestions).
+**30s fixed chunk size** — Sweet spot for Whisper accuracy. Shorter chunks produce higher error rates on incomplete sentences. Longer chunks delay the first transcript appearance.
 
-**30s fixed chunk size** — This is the sweet spot for Whisper accuracy. Shorter chunks have higher transcription error rates. Longer chunks delay the first transcript.
+**localStorage for settings** — Right for a single-user demo. A multi-user SaaS would encrypt and store keys server-side.
 
-**localStorage for settings** — Appropriate for a demo/personal tool. A multi-user system would need server-side storage.
-
-**Context trimming keeps the tail** — When the transcript exceeds the context budget, we drop the beginning (oldest). This is the right call for live suggestions where recency matters most. For a post-meeting summary, you'd want the full transcript.
+**Context trimming keeps the tail** — When transcript exceeds the budget, oldest content is dropped. Correct for live suggestions where recency wins. A production system would use a summarisation pass to compress old context rather than discarding it.
 
 ---
 
 ## Deployment
 
-### Vercel (recommended)
+### Vercel (used for live demo)
 
 ```bash
 npm install -g vercel
 vercel --prod
 ```
 
-### Netlify
+### Local dev
 
 ```bash
-npm run build
-# Drag the build/ folder to netlify.com/drop
+npm install
+npm start        # Vite dev server on port 3000
 ```
 
-### Any static host
+### Build
 
 ```bash
-npm run build
-# Serve the build/ directory
+npm run build    # outputs to dist/
 ```
 
-No server-side environment variables needed — the API key is entered by the user in the browser.
+No environment variables needed server-side. The Groq API key is entered by the user in the browser Settings modal.
