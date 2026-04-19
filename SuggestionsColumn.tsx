@@ -13,6 +13,7 @@ interface Props {
   onRefresh: () => void
   onSuggestionClick: (suggestion: Suggestion) => void
   hasTranscript: boolean
+  isRecording: boolean
 }
 
 export function SuggestionsColumn({
@@ -21,6 +22,7 @@ export function SuggestionsColumn({
   onRefresh,
   onSuggestionClick,
   hasTranscript,
+  isRecording,
 }: Props) {
   return (
     <div className="column suggestions-column">
@@ -40,9 +42,27 @@ export function SuggestionsColumn({
       <div className="column-body">
         {batches.length === 0 ? (
           <div className="suggestions-empty">
-            {hasTranscript ? (
+            {isLoading ? (
               <>
-                Generating first suggestions…
+                Generating suggestions…
+                <br />
+                <span style={{ fontSize: 12, opacity: 0.6 }}>Analysing transcript</span>
+              </>
+            ) : isRecording && !hasTranscript ? (
+              <>
+                <span style={{ color: "var(--type-answer)" }}>● Recording</span>
+                <br />
+                First suggestions arrive in ~30s
+                <br />
+                <span style={{ fontSize: 12, opacity: 0.6 }}>
+                  Waiting for first transcript chunk
+                </span>
+              </>
+            ) : isRecording && hasTranscript ? (
+              <>
+                <span style={{ color: "var(--type-answer)" }}>● Recording</span>
+                <br />
+                Suggestions generating…
                 <br />
                 <span style={{ fontSize: 12, opacity: 0.6 }}>
                   Or click Refresh to trigger now
@@ -50,9 +70,11 @@ export function SuggestionsColumn({
               </>
             ) : (
               <>
-                Start recording to
+                Press <strong>Record</strong> to start
                 <br />
-                get live suggestions
+                <span style={{ fontSize: 12, opacity: 0.6 }}>
+                  Suggestions appear here every 30s
+                </span>
               </>
             )}
           </div>
