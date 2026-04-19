@@ -58,7 +58,7 @@ export async function chatCompletion(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "llama3-70b-8192",
+      model: "openai/gpt-oss-120b",
       messages,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.max_tokens ?? 1024,
