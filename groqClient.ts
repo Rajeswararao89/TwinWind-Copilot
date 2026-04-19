@@ -6,8 +6,6 @@
 
 const GROQ_BASE = "https://api.groq.com/openai/v1"
 
-// ─── Transcription ────────────────────────────────────────────────────────────
-
 export async function transcribeAudio(
   apiKey: string,
   audioBlob: Blob
@@ -32,8 +30,6 @@ export async function transcribeAudio(
   const text = await res.text()
   return text.trim()
 }
-
-// ─── Chat Completion ─────────────────────────────────────────────────────────
 
 export interface GroqChatMessage {
   role: "system" | "user" | "assistant"
@@ -74,10 +70,6 @@ export async function chatCompletion(
   return data.choices?.[0]?.message?.content ?? ""
 }
 
-/**
- * Streaming chat completion — calls onToken for each text delta,
- * resolves with the full concatenated text when done.
- */
 export async function streamingChatCompletion(
   apiKey: string,
   messages: GroqChatMessage[],
@@ -91,7 +83,7 @@ export async function streamingChatCompletion(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+      model: "openai/gpt-oss-120b",
       messages,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.max_tokens ?? 1024,
