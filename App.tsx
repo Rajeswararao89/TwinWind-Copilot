@@ -9,7 +9,7 @@ import { Settings, Download } from "lucide-react"
 
 import { useAudioRecorder } from "./useAudioRecorder"
 import { transcribeAudio, streamingChatCompletion } from "./groqClient"
-import { generateSuggestions, expandSuggestion, trimToTokenBudget } from "./suggestionService"
+import { generateSuggestions, trimToTokenBudget } from "./suggestionService"
 import { exportSession } from "./exportSession"
 import { SettingsModal } from "./SettingsModal"
 import { TranscriptColumn } from "./TranscriptColumn"
@@ -117,6 +117,8 @@ export default function App() {
 
   // ─── Suggestion Generation ──────────────────────────────────────────────
 
+  const suggestionBatchesRef = useRef<SuggestionBatch[]>([])
+
   const handleRefreshSuggestions = useCallback(async () => {
     const transcript = transcriptRef.current
     if (!transcript || isSuggestionsLoading) return
@@ -124,10 +126,21 @@ export default function App() {
     const s = settingsRef.current
     if (!s.groqApiKey) return
 
+    // Pass the last batch's previews so the model avoids repeating them
+    const batches = suggestionBatchesRef.current
+    const lastBatch = batches[batches.length - 1]
+    const previousPreviews = lastBatch
+      ? lastBatch.suggestions.map((s) => s.preview)
+      : []
+
     setIsSuggestionsLoading(true)
     try {
-      const batch = await generateSuggestions(transcript, s)
-      setSuggestionBatches((prev) => [...prev, batch])
+      const batch = await generateSuggestions(transcript, s, previousPreviews)
+      setSuggestionBatches((prev) => {
+        const updated = [...prev, batch]
+        suggestionBatchesRef.current = updated
+        return updated
+      })
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Suggestion generation error")
     } finally {
@@ -155,13 +168,12 @@ export default function App() {
     }
   }, [isRecording, settings.autoRefreshIntervalMs, handleRefreshSuggestions])
 
-  // ─── Suggestion click → expand → chat ──────────────────────────────────
+  // ─── Suggestion click → stream expansion → chat ────────────────────────
 
   const handleSuggestionClick = useCallback(async (suggestion: Suggestion) => {
     const s = settingsRef.current
     if (!s.groqApiKey) return
 
-    // Add user message in chat (the suggestion preview as the prompt)
     const userMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       role: "user",
@@ -174,21 +186,36 @@ export default function App() {
     setIsStreaming(true)
     setStreamingContent("")
 
-    let fullResponse = ""
+    // Build the same prompt as expandSuggestion but stream it
+    const transcript = getFullTranscript()
+    const contextText = trimToTokenBudget(transcript, s.detailContextTokens)
+    const userMessage = `## Full Conversation Transcript\n\n${contextText}
 
+## Suggestion to Expand
+Type: ${suggestion.type}
+Preview: ${suggestion.preview}
+
+Please provide a detailed, immediately useful response for this suggestion.`
+
+    let accumulated = ""
     try {
-      // Generate detailed expansion
-      const transcript = getFullTranscript()
-      fullResponse = await expandSuggestion(suggestion, transcript, s)
+      accumulated = await streamingChatCompletion(
+        s.groqApiKey,
+        [
+          { role: "system", content: s.detailPrompt },
+          { role: "user", content: userMessage },
+        ],
+        (token) => setStreamingContent((prev) => prev + token),
+        { temperature: 0.5, max_tokens: 500 }
+      )
     } catch (e: unknown) {
-      fullResponse = e instanceof Error ? `Error: ${e.message}` : "An error occurred."
+      accumulated = e instanceof Error ? `Error: ${e.message}` : "An error occurred."
     }
 
-    // Commit the streamed response
     const assistantMsg: ChatMessage = {
       id: `msg-${Date.now()}-a`,
       role: "assistant",
-      content: fullResponse,
+      content: accumulated,
       timestamp: Date.now(),
     }
     setChatMessages((prev) => [...prev, assistantMsg])
@@ -321,6 +348,7 @@ export default function App() {
           onRefresh={handleRefreshSuggestions}
           onSuggestionClick={handleSuggestionClick}
           hasTranscript={hasTranscript}
+          isRecording={isRecording}
         />
 
         <ChatColumn
