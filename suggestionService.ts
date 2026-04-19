@@ -18,14 +18,20 @@ interface RawSuggestion {
 
 /**
  * Generate a fresh batch of 3 suggestions from the recent transcript context.
+ * Accepts the previous batch's previews so the model avoids repeating them.
  */
 export async function generateSuggestions(
   transcript: string,
-  settings: AppSettings
+  settings: AppSettings,
+  previousPreviews: string[] = []
 ): Promise<SuggestionBatch> {
   const contextText = trimToTokenBudget(transcript, settings.suggestionContextTokens)
 
-  const userMessage = `## Live Conversation Transcript (recent context)\n\n${contextText}`
+  const previousContext = previousPreviews.length > 0
+    ? `\n\n## Previous Suggestions (already shown — generate 3 that are meaningfully different)\n${previousPreviews.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
+    : ""
+
+  const userMessage = `## Live Conversation Transcript (recent context)\n\n${contextText}${previousContext}`
 
   const raw = await chatCompletion(
     settings.groqApiKey,
