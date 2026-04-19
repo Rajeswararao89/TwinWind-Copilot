@@ -58,7 +58,7 @@ export async function chatCompletion(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+      model: "llama3-70b-8192",
       messages,
       temperature: options.temperature ?? 0.7,
       max_tokens: options.max_tokens ?? 1024,
